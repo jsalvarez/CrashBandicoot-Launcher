@@ -1,0 +1,42 @@
+name: Build Vita Bootstrap VPK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vita-bootstrap]
+    paths:
+      - "VitaBootstrap/**"
+      - ".github/workflows/vita-bootstrap.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: vitasdk/vitasdk:2026.08
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        working-directory: VitaBootstrap
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+
+      - name: Build
+        working-directory: VitaBootstrap
+        run: cmake --build build -j2
+
+      - name: Verify VPK
+        working-directory: VitaBootstrap
+        run: |
+          test -f build/crash_vita_bootstrap.vpk
+          ls -lh build/crash_vita_bootstrap.vpk
+
+      - name: Upload VPK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CrashRecomp-VitaBootstrap
+          path: VitaBootstrap/build/crash_vita_bootstrap.vpk
