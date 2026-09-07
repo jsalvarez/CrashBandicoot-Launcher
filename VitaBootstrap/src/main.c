@@ -1,16 +1,18 @@
 #include <psp2/ctrl.h>
 #include <psp2/display.h>
 #include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/sysmem.h>
 #include <stdint.h>
-#include <stdlib.h>
-#include <malloc.h>
 #include <string.h>
 
 #define FB_WIDTH 960
 #define FB_HEIGHT 544
 #define FB_STRIDE 960
+#define FB_BLOCK_SIZE (2 * 1024 * 1024)
 
 static uint32_t *g_framebuffer;
+static uint32_t *g_framebuffers[2];
+static SceUID g_fb_blocks[2] = {-1, -1};
 
 static inline uint32_t abgr(uint8_t a, uint8_t b, uint8_t g, uint8_t r) {
     return ((uint32_t)a << 24) | ((uint32_t)b << 16) | ((uint32_t)g << 8) | r;
@@ -29,6 +31,7 @@ static void rect(int x, int y, int w, int h, uint32_t color) {
     if (x + w > FB_WIDTH) w = FB_WIDTH - x;
     if (y + h > FB_HEIGHT) h = FB_HEIGHT - y;
     if (w <= 0 || h <= 0) return;
+
     for (int yy = y; yy < y + h; ++yy) {
         uint32_t *row = g_framebuffer + yy * FB_STRIDE;
         for (int xx = x; xx < x + w; ++xx) row[xx] = color;
@@ -52,7 +55,9 @@ static const Glyph GLYPHS[] = {
 
 static const uint8_t *glyph_for(char c) {
     if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
-    for (unsigned i = 0; i < sizeof(GLYPHS)/sizeof(GLYPHS[0]); ++i) if (GLYPHS[i].ch == c) return GLYPHS[i].rows;
+    for (unsigned i = 0; i < sizeof(GLYPHS)/sizeof(GLYPHS[0]); ++i) {
+        if (GLYPHS[i].ch == c) return GLYPHS[i].rows;
+    }
     return GLYPHS[0].rows;
 }
 
@@ -60,7 +65,9 @@ static void draw_char(int x, int y, int scale, char c, uint32_t color) {
     const uint8_t *rows = glyph_for(c);
     for (int gy = 0; gy < 7; ++gy) {
         for (int gx = 0; gx < 5; ++gx) {
-            if (rows[gy] & (1u << (4-gx))) rect(x + gx*scale, y + gy*scale, scale, scale, color);
+            if (rows[gy] & (1u << (4-gx))) {
+                rect(x + gx*scale, y + gy*scale, scale, scale, color);
+            }
         }
     }
 }
@@ -74,22 +81,65 @@ static void draw_text(int x, int y, int scale, const char *text, uint32_t color)
     }
 }
 
-static void present(void) {
+static int alloc_framebuffers(void) {
+    for (int i = 0; i < 2; ++i) {
+        g_fb_blocks[i] = sceKernelAllocMemBlock(
+            i == 0 ? "crash_fb0" : "crash_fb1",
+            SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW,
+            FB_BLOCK_SIZE,
+            NULL
+        );
+        if (g_fb_blocks[i] < 0) return g_fb_blocks[i];
+
+        void *base = NULL;
+        int rc = sceKernelGetMemBlockBase(g_fb_blocks[i], &base);
+        if (rc < 0) return rc;
+
+        g_framebuffers[i] = (uint32_t *)base;
+        memset(g_framebuffers[i], 0, FB_BLOCK_SIZE);
+    }
+    return 0;
+}
+
+static void free_framebuffers(void) {
+    sceDisplaySetFrameBuf(NULL, SCE_DISPLAY_SETBUF_IMMEDIATE);
+    for (int i = 0; i < 2; ++i) {
+        if (g_fb_blocks[i] >= 0) {
+            sceKernelFreeMemBlock(g_fb_blocks[i]);
+            g_fb_blocks[i] = -1;
+        }
+        g_framebuffers[i] = NULL;
+    }
+}
+
+static void present(uint32_t *buffer) {
     SceDisplayFrameBuf fb = {
-        .size = sizeof(SceDisplayFrameBuf), .base = g_framebuffer, .pitch = FB_STRIDE,
-        .pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8, .width = FB_WIDTH, .height = FB_HEIGHT
+        .size = sizeof(SceDisplayFrameBuf),
+        .base = buffer,
+        .pitch = FB_STRIDE,
+        .pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8,
+        .width = FB_WIDTH,
+        .height = FB_HEIGHT
     };
+
     sceDisplaySetFrameBuf(&fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
     sceDisplayWaitVblankStart();
 }
 
 int main(int argc, char *argv[]) {
-    (void)argc; (void)argv;
-    g_framebuffer = memalign(0x1000, FB_STRIDE * FB_HEIGHT * sizeof(uint32_t));
-    if (!g_framebuffer) { sceKernelExitProcess(1); return 1; }
+    (void)argc;
+    (void)argv;
+
+    if (alloc_framebuffers() < 0) {
+        free_framebuffers();
+        sceKernelExitProcess(1);
+        return 1;
+    }
 
     sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
+
     int running = 1;
+    int draw_index = 0;
     uint32_t frame = 0;
 
     while (running) {
@@ -97,27 +147,45 @@ int main(int argc, char *argv[]) {
         memset(&pad, 0, sizeof(pad));
         sceCtrlPeekBufferPositive(0, &pad, 1);
 
-        uint32_t bg = abgr(255,22,19,18), panel = abgr(255,39,35,32), text = abgr(255,235,235,235);
-        uint32_t accent = abgr(255,70,163,255), ok = abgr(255,90,210,120);
+        /* Draw only into the buffer that is not currently being scanned out. */
+        g_framebuffer = g_framebuffers[draw_index];
+
+        uint32_t bg = abgr(255,22,19,18);
+        uint32_t panel = abgr(255,39,35,32);
+        uint32_t text = abgr(255,235,235,235);
+        uint32_t accent = abgr(255,70,163,255);
+        uint32_t ok = abgr(255,90,210,120);
+
         clear_screen(bg);
         rect(0,0,FB_WIDTH,12,accent);
         rect(48,54,FB_WIDTH-96,FB_HEIGHT-108,panel);
+
         draw_text(86,92,4,"CRASH RECOMP VITA",text);
         draw_text(88,145,2,"NATIVE VITA BOOTSTRAP",accent);
-        draw_text(88,210,2,"DISPLAY: OK",ok);
-        draw_text(88,244,2,"INPUT:   OK",ok);
-        draw_text(88,278,2,"RUNTIME: WAITING FOR RECOMPONE",text);
-        draw_text(88,355,2,"PRESS X TO FLASH INPUT",text);
-        draw_text(88,388,2,"PRESS START TO EXIT",text);
-        if (pad.buttons & SCE_CTRL_CROSS) { rect(712,204,110,110,accent); draw_text(739,240,3,"X",bg); }
-        int pulse = (int)((frame/15u)%12u);
-        rect(88,450,12+pulse*10,8,accent);
-        present();
+        draw_text(88,195,2,"DISPLAY: OK",ok);
+        draw_text(88,229,2,"INPUT:   OK",ok);
+        draw_text(88,263,2,"CDRAM:   OK",ok);
+        draw_text(88,297,2,"DOUBLE BUFFER: OK",ok);
+        draw_text(88,348,2,"RUNTIME: WAITING FOR RECOMPONE",text);
+        draw_text(88,397,2,"PRESS X TO FLASH INPUT",text);
+        draw_text(88,430,2,"PRESS START TO EXIT",text);
+
+        if (pad.buttons & SCE_CTRL_CROSS) {
+            rect(712,204,110,110,accent);
+            draw_text(739,240,3,"X",bg);
+        }
+
+        int pulse = (int)((frame / 15u) % 12u);
+        rect(88,485,12 + pulse*10,8,accent);
+
+        present(g_framebuffer);
+        draw_index ^= 1;
         frame++;
+
         if (pad.buttons & SCE_CTRL_START) running = 0;
     }
 
-    free(g_framebuffer);
+    free_framebuffers();
     sceKernelExitProcess(0);
     return 0;
 }
