@@ -11,9 +11,9 @@ endif()
 project(crash_vita_bootstrap C)
 include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
-set(VITA_APP_NAME "Crash Recomp Vita Bootstrap")
+set(VITA_APP_NAME "Crash Recomp Vita")
 set(VITA_TITLEID "CRSH00001")
-set(VITA_VERSION "01.00")
+set(VITA_VERSION "00.30")
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
