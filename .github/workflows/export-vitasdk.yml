@@ -1,0 +1,34 @@
+name: Export VitaSDK Toolchain
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [vita-bootstrap]
+    paths:
+      - ".github/workflows/export-vitasdk.yml"
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    container:
+      image: vitasdk/vitasdk:2026.08
+
+    steps:
+      - name: Package minimal VitaSDK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tar -C "$VITASDK" -cJf /tmp/vitasdk-minimal.tar.xz \
+            bin \
+            arm-vita-eabi \
+            share/vita.cmake \
+            share/vita.toolchain.cmake
+          ls -lh /tmp/vitasdk-minimal.tar.xz
+
+      - name: Upload toolchain artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VitaSDK-Minimal-2026.08
+          path: /tmp/vitasdk-minimal.tar.xz
+          compression-level: 0
+          retention-days: 1
