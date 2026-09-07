@@ -22,7 +22,6 @@ jobs:
             bin \
             arm-vita-eabi \
             lib \
-            libexec \
             share/vita.cmake \
             share/vita.toolchain.cmake
           ls -lh /tmp/vitasdk-local.tar.xz
