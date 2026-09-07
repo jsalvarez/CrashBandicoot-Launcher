@@ -19,7 +19,13 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 add_executable(${PROJECT_NAME} src/main.c)
 target_compile_options(${PROJECT_NAME} PRIVATE -O2 -Wall -Wextra -Wno-unused-parameter)
-target_link_libraries(${PROJECT_NAME} SceDisplay_stub SceCtrl_stub SceLibKernel_stub SceProcessmgr_stub)
+target_link_libraries(${PROJECT_NAME}
+  SceDisplay_stub
+  SceCtrl_stub
+  SceIofilemgr_stub
+  SceLibKernel_stub
+  SceProcessmgr_stub
+)
 
 vita_create_self(eboot.bin ${PROJECT_NAME} UNSAFE)
 vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} eboot.bin
